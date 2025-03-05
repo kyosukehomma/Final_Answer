@@ -43,10 +43,6 @@ def set_webdriver():
     Returns:
         selenium.webdriver.Chrome: 設定済みの Chrome WebDriver インスタンス。
 
-    Notes:
-        - Docker 環境で動作するように、適切なオプションを追加。
-        - 'tempfile.mkdtemp()' を使用して一意の '--user-data-dir' を設定。
-        - '/usr/local/bin/chromedriver/chromedriver' を WebDriver のパスとして使用。
     """
     service = Service(ChromeDriverManager().install())
     options = webdriver.ChromeOptions()
@@ -155,7 +151,7 @@ def get_address(driver, info_table):
         match = re.compile(address_pattern).match(region)
         if match:
             prefecture, city, street = match.groups()
-
+            print(street)
         # 建物名を取得
         try:
             locality_elem = adr_slink.find_element(By.CLASS_NAME, 'locality')
