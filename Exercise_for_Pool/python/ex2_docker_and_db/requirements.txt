@@ -1,0 +1,5 @@
+sqlalchemy
+mysql-connector-python
+pandas
+selenium
+webdriver-manager
