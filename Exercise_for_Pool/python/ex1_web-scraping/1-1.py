@@ -348,7 +348,7 @@ def main():
 
     # CSVファイルとして保存
     df.to_csv(file_name, index=False, encoding='utf-8-sig')
-    print(file_name + " has been created!") 
+    print(file_name + " has been created!")
 
 if __name__ == "__main__":
     main()  # スクリプトが直接実行される場合に main() 関数を呼び出す
