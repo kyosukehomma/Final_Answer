@@ -5,14 +5,17 @@
 このモジュールは、ぐるなびのウェブサイトから店舗情報を収集します。
 
 """
+import requests                         # HTTPリクエストを送信する
 import pandas as pd                     # データ処理・分析
 import re                               # 正規表現を扱う
 import os                               # OS関連: 環境変数を扱う際に使用
 import json                             # JSONデータの読み書き
 import ssl                              # SSL/TLSの処理
 import socket                           # ネットワーク通信（IPアドレス取得など）
+import time
 from urllib.parse import urlparse       # URL解析
 from selenium import webdriver                                      # Selenium WebDriverをインポート
+from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.common.by import By  			            # WebElementを指定するためのByをインポート
 from selenium.webdriver.support import expected_conditions as EC    # 特定の条件が満たされるのを待つためのモジュール
 from selenium.webdriver.support.ui import WebDriverWait             # WebDriverの待機処理を提供するモジュール
@@ -151,7 +154,7 @@ def get_address(driver, info_table):
         match = re.compile(address_pattern).match(region)
         if match:
             prefecture, city, street = match.groups()
-            print(street)
+
         # 建物名を取得
         try:
             locality_elem = adr_slink.find_element(By.CLASS_NAME, 'locality')
@@ -183,12 +186,13 @@ def get_url(driver, info_table):
         str or None: 店舗公式URL。取得できない場合は None。
 
     Notes:
-        - `data-o` は JSON 形式で `{ "b": "https", "a": "example.com" }` のように格納されている。
-        - `data-o` から取得できなかった場合、 `sv-site` ID の要素内にある `sv-of double` クラスのリンクを代替として使用する。
-        - 例外発生時には `None` を返し、エラーメッセージを出力する。
-
+        - `requests.get(url, allow_redirects=True)` により、リダイレクト後の最終URLを取得する。
+        - ただし、サーバー側で User-Agent に基づく動的なレスポンスがある場合、ブラウザでの挙動と異なるURLが取得される可能性がある。
+        - `requests.RequestException` が発生した場合は、取得した元のURLを返す。
+        - 2025/03/13 修正。
     """
     # 店舗公式URLの情報をもつ要素を取得する
+    url = None
     try:
         link_elem = info_table.find_element(By.CLASS_NAME, 'url.go-off')
         if link_elem:
@@ -196,7 +200,7 @@ def get_url(driver, info_table):
             data_o = link_elem.get_attribute('data-o')
             if data_o:
                 data = json.loads(data_o)           # JSONデコード（&quot; を " に変換）
-                return f"{data['b']}://{data['a']}" # プロトコルとドメインを結合
+                url = f"{data['b']}://{data['a']}"  # プロトコルとドメインを結合
     except Exception:
         print("No official URL. Proceed to alternative method.")
         pass  # エラーが発生した場合は、代替手段に進む
@@ -207,13 +211,23 @@ def get_url(driver, info_table):
         if sv_site:
             link_elem = sv_site.find_element(By.CLASS_NAME, 'sv-of.double')
             if link_elem:
-                return link_elem.get_attribute('href')
+                url = link_elem.get_attribute('href')
     except Exception as e:
         print(f"Error in extracting URL: {e}")
         pass  # エラーが発生した場合は、Noneを返す
 
-    # どの手段でも取得できなかった場合
-    return None
+    # 実際のブラウザで開いたときの最終的なURLを取得する
+    try:
+        # 明示的に None や "" の場合を除外 (どの手段でも取得できなかった場合)
+        if not url:
+            return None
+        # 指定したURLに GET リクエストを送り、ブラウザのように振る舞い、リダイレクトも自動追従する
+        response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, allow_redirects=True)
+        # リダイレクト後の最終URL
+        return response.url
+    except requests.RequestException:
+        # エラー時は元のURLを返す
+        return url
 
 def check_ssl_status(url):
     """URL の SSL 証明書を検証し、その結果を返す。
@@ -280,6 +294,40 @@ def check_ssl_certificate(url):
     except Exception as e:
         return False, f"SSL Not Available ({e})"
 
+def get_rs_page(driver, rs_url, max_retries=5, retry_delay=5):
+    """店舗情報を取得する関数（リトライ機能付き）
+
+    Args:
+        driver (selenium.webdriver.Chrome): SeleniumのWebDriverインスタンス
+        rs_url (str): 取得するURL
+        max_retries (int): 最大リトライ回数（デフォルト: 5)
+        retry_delay (int): リトライ間隔（秒）（デフォルト: 5秒)
+
+    Returns:
+        None
+    """
+    attempt = 0
+    while attempt < max_retries:
+        try:
+            # 最大リトライ回数以内であれば、ページを取得
+            driver.get(rs_url)
+            print(f"Successfully accessed {rs_url}")
+            return  # 正常にページが取得できれば、関数を終了
+
+        except TimeoutException:
+            attempt += 1
+            print(f"Timeout occurred while trying to access {rs_url}. Attempt {attempt}/{max_retries}.")
+            if attempt < max_retries:
+                # リトライ前に待機
+                print(f"Retrying in {retry_delay} seconds...")
+                time.sleep(retry_delay) # リトライ前に指定秒数だけ待機
+            else:
+                print(f"Max retries reached. Could not access {rs_url}.")
+                return None # 最大リトライ回数を超えたら None を返す
+
+    # リトライ回数を超えても成功しなければ、最終的に None を返す
+    return None
+
 def get_rs_data(driver, rs_url):
     """指定された店舗ページから店舗情報を取得する。
     Selenium を用いて店舗ページを開き、テーブルから必要な情報を抽出する。
@@ -323,8 +371,8 @@ def get_rs_data(driver, rs_url):
         'SSL': False
     }
 
-    # Seleniumを使ってページを開く
-    driver.get(rs_url)
+    # Seleniumを使ってページを開く (タイムアウトしたら既定回数リトライ)
+    get_rs_page(driver, rs_url)
 
     # ページの読み込みを待機
     driver.implicitly_wait(3)
@@ -365,6 +413,7 @@ def loop_rs_links(data, driver, rs_links, rs_count, rs_demand):
 
     """
     rs_digits = len(str(rs_demand))             # rs_demandの桁数 (ゼロ埋め用)
+    initial_url = driver.current_url            # ループ前のURLを保存
 
     for link in rs_links:
         id = rs_count + 1
@@ -375,6 +424,7 @@ def loop_rs_links(data, driver, rs_links, rs_count, rs_demand):
             data.append(rs_data)                # 取得したデータをリストに追加
             rs_count += 1                       # 取得した店舗数をカウント
 
+    driver.get(initial_url)                     # ループ後に元のページに戻る
     return data, rs_count
 
 def get_rs_links(driver):
@@ -395,6 +445,26 @@ def get_rs_links(driver):
             rs_links.append(href)   # 絶対URLか相対URLかを判定し、完全なURLを生成
 
     return rs_links
+
+def get_next_button(driver):
+    """「次へ（>）」ボタンの WebElement を取得する。
+
+    Args:
+        driver (webdriver.Chrome): Selenium WebDriver インスタンス。
+
+    Returns:
+        WebElement or None: 次ページのボタンが存在すれば WebElement、なければ None。
+
+    Notes:
+        2025/03/13 追加。
+    """
+    try:
+        target_class = "style_nextIcon__M_Me_"
+        return WebDriverWait(driver, 5).until(
+            EC.presence_of_element_located((By.CLASS_NAME, target_class))
+        )
+    except Exception:
+        return None
 
 def main():
     """ぐるなびの店舗情報を取得し、CSVファイルに保存する。
@@ -425,13 +495,12 @@ def main():
     rs_links = []               # 店舗のURLを格納するリスト
     driver = set_webdriver()    # SeleniumのChromeドライバーオプションを設定する関数
 
-    # 検索結果のURLのベース（ページ番号を変えて巡回する）
-    base_url = "https://r.gnavi.co.jp/area/jp/rs/?p="
+    # 2025/03/13 修正:
+    # Seleniumで最初のページを開く
+    driver.get("https://r.gnavi.co.jp/area/jp/rs/")
 
     # 目標の件数を取得するまでループ
     while rs_count < rs_demand:
-        search_url = base_url + str(pg_count)       # 検索結果ページのURLを生成
-        driver.get(search_url)                      # Seleniumでページを開く
         driver.implicitly_wait(3)                   # ページが読み込まれるのを待機
         rs_links = get_rs_links(driver)             # 店舗ページのリンクを取得する関数
         rs_links = rs_links[:rs_demand - rs_count]  # 残りの必要件数分だけ取得（上限を超えないように）
@@ -442,6 +511,19 @@ def main():
         # 30件ごとに次の検索ページに移動
         if rs_count % 30 == 0:
             pg_count += 1
+
+            # 2025/03/13 修正:
+            # リロード後、ページ下部の「>」ボタンをクリックしてページ遷移を行う
+            driver.refresh()
+            time.sleep(3)
+            next_button = get_next_button(driver)
+            if next_button:
+                # JavaScript でクリック
+                driver.execute_script("arguments[0].click();", next_button)
+                print(driver.current_url)
+            else:
+                print("No more pages.")
+                break   # 次ページがなければ終了
 
     # ドライバーを閉じる
     driver.quit()

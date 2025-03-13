@@ -125,17 +125,18 @@ def get_address(info_table):
     }
 
 def get_url(info_table, soup):
-    """店舗公式URLを取得する。
+    """店舗公式URLを取得し、リダイレクト後の最終URLを返す。
 
     Args:
         info_table (bs4.element.Tag): 店舗情報のHTMLテーブル。
         soup (BeautifulSoup): 店舗ページ全体のBeautifulSoupオブジェクト。
 
     Returns:
-        str or None: 店舗公式URL、取得できない場合は None。
+        str or None: 実際にブラウザで開いたときの最終的なURL。取得できない場合は None。
     """
     # 店舗公式URLの情報をもつ要素を取得する
     link_elem = info_table.find('a', class_='url go-off')
+    url = None
     if link_elem:
         # カスタムデータ属性 'data-o' から値を取得（JSON 形式の文字列が格納されている）
         try:
@@ -144,23 +145,34 @@ def get_url(info_table, soup):
                 # JSONデコード（&quot; を " に変換）
                 data = json.loads(data_o)
                 # プロトコルとドメインを結合
-                return f"{data['b']}://{data['a']}"
+                url = f"{data['b']}://{data['a']}"
         # デコードエラー時は None を返す
         except (json.JSONDecodeError, KeyError):
             return None
 
     # 代替手段でURLを取得（'data-o' から取得できなかった場合）
-    # IDが 'sv-site' の <ul> 要素を探す（代替URLが含まれている可能性がある）
-    sv_site = soup.find('ul', id='sv-site')
-    if sv_site:
-        # クラス 'sv-of double' を持つ <a> 要素を探す
-        link_elem = sv_site.find('a', class_='sv-of double')
-        if link_elem:
-            # href属性（URL）を取得し、返す
-            return link_elem.get('href')
+    if not url:
+        # IDが 'sv-site' の <ul> 要素を探す（代替URLが含まれている可能性がある）
+        sv_site = soup.find('ul', id='sv-site')
+        if sv_site:
+            # クラス 'sv-of double' を持つ <a> 要素を探す
+            link_elem = sv_site.find('a', class_='sv-of double')
+            if link_elem:
+                # href属性（URL）を取得し、返す
+                url = link_elem.get('href')
 
-    # どの手段でも取得できなかった場合
-    return None
+    # 実際のブラウザで開いたときの最終的なURLを取得する
+    try:
+        # 明示的に None や "" の場合を除外
+        if not url:
+            return None
+        # 指定したURLに GET リクエストを送り、ブラウザのように振る舞い、リダイレクトも自動追従する
+        response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, allow_redirects=True)
+        # リダイレクト後の最終URL
+        return response.url
+    except requests.RequestException:
+        # エラー時は元のURLを返す
+        return url
 
 def check_ssl_status(url):
     """URL の SSL 証明書を検証し、結果を data_dict に格納する。
